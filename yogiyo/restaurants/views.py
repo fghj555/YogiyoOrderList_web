@@ -83,23 +83,129 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
             return []
 
     @action(detail=False, methods=['GET'])
-    def realtime(self, request, *args, **kwargs):
+    def search(self, request, *args, **kwargs):
         """
-        실시간 API 데이터 조회
+        키워드로 식당 검색
         
-        외부 API에서 실시간으로 데이터를 가져옵니다.
+        Parameters:
+        - keyword: 검색 키워드 (식당명, 메뉴명 포함)
+        - lat: 위도
+        - lng: 경도
+        - category: 카테고리 필터 (치킨, 피자 등)
         """
-        lat = request.query_params.get('lat', 37.4979)
-        lng = request.query_params.get('lng', 127.0276)
+        keyword = request.query_params.get('keyword', '')
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        category = request.query_params.get('category')
         
-        try:
-            lat = float(lat)
-            lng = float(lng)
-        except:
-            lat, lng = 37.4979, 127.0276
+        qs = self.get_queryset()
         
-        restaurants = self.get_realtime_data(lat, lng)
-        return Response({'restaurants': restaurants, 'timestamp': datetime.now().isoformat()})
+        # 위치 기반 필터링
+        if lat and lng:
+            try:
+                lat = float(lat)
+                lng = float(lng)
+                min_lat = lat - 0.009
+                max_lat = lat + 0.009
+                min_lon = lng - 0.015
+                max_lon = lng + 0.01
+                qs = qs.filter(lat__gte=min_lat, lat__lte=max_lat,
+                              lng__gte=min_lon, lng__lte=max_lon)
+            except:
+                pass
+        
+        # 키워드 검색
+        if keyword:
+            qs = qs.filter(Q(name__icontains=keyword) |
+                          Q(menu_group__menu__name__icontains=keyword) |
+                          Q(categories__icontains=keyword)).distinct()
+        
+        # 카테고리 필터
+        if category:
+            qs = qs.filter(categories__icontains=category)
+        
+        serializer = self.get_serializer(qs[:50], many=True)
+        return Response({'results': serializer.data, 'count': len(serializer.data)})
+    
+    @action(detail=True, methods=['GET'])
+    def menu(self, request, pk=None):
+        """
+        식당의 모든 메뉴 조회
+        
+        Parameters:
+        - pk: 식당 ID
+        """
+        restaurant = self.get_object()
+        menu_groups = restaurant.menu_group.all().prefetch_related('menu')
+        
+        data = []
+        for group in menu_groups:
+            group_data = {
+                'group_id': group.id,
+                'group_name': group.name,
+                'menus': [
+                    {
+                        'id': m.id,
+                        'name': m.name,
+                        'price': m.price,
+                        'caption': m.caption,
+                        'is_photomenu': m.is_photomenu
+                    }
+                    for m in group.menu.all()
+                ]
+            }
+            data.append(group_data)
+        
+        return Response({
+            'restaurant_id': restaurant.id,
+            'restaurant_name': restaurant.name,
+            'menu_groups': data
+        })
+    
+    @action(detail=True, methods=['GET'])
+    def detail_full(self, request, pk=None):
+        """
+        식당 상세정보 (메뉴, 리뷰 포함 한번에 조회)
+        """
+        restaurant = self.get_object()
+        
+        # 식당 정보
+        serializer = RestaurantDetailSerializer(restaurant)
+        restaurant_data = serializer.data
+        
+        # 메뉴 정보
+        menu_groups = restaurant.menu_group.all().prefetch_related('menu')
+        menus = []
+        for group in menu_groups:
+            for menu in group.menu.all():
+                menus.append({
+                    'id': menu.id,
+                    'name': menu.name,
+                    'price': menu.price,
+                    'caption': menu.caption,
+                    'group': group.name
+                })
+        
+        # 리뷰 정보
+        reviews = restaurant.review.all()[:10]
+        reviews_data = [
+            {
+                'id': r.id,
+                'owner_name': r.owner.email if r.owner else 'Anonymous',
+                'rating': r.rating,
+                'caption': r.caption,
+                'created': r.created.isoformat() if r.created else None
+            }
+            for r in reviews
+        ]
+        
+        return Response({
+            'restaurant': restaurant_data,
+            'menus': menus,
+            'reviews': reviews_data,
+            'menu_count': len(menus),
+            'review_count': len(reviews_data)
+        })
 
     def retrieve(self, request, *args, **kwargs):
         """
