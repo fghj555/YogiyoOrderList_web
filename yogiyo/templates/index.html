@@ -198,6 +198,54 @@
             margin-bottom: 10px;
         }
         
+        .menus-section {
+            margin-top: 30px;
+            border-top: 2px solid #eee;
+            padding-top: 20px;
+            background: #fafafa;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        
+        .menus-section h3 {
+            margin-bottom: 15px;
+        }
+        
+        .menu-group {
+            margin-bottom: 20px;
+        }
+        
+        .menu-group h4 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .menu-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 13px;
+        }
+        
+        .menu-name {
+            flex: 1;
+            color: #333;
+        }
+        
+        .menu-price {
+            font-weight: 600;
+            color: #ff6b35;
+            margin-left: 10px;
+            min-width: 80px;
+            text-align: right;
+        }
+        
         .reviews-section {
             margin-top: 30px;
             border-top: 2px solid #eee;
@@ -436,41 +484,68 @@
             const content = document.getElementById('detailContent');
             
             try {
-                const response = await fetch(`${API_BASE}/restaurants/${restaurantId}`);
-                const restaurant = await response.json();
+                // 새로운 detail_full 엔드포인트 사용 - Yogiyo API 실시간 데이터
+                const response = await fetch(`${API_BASE}/restaurants/${restaurantId}/detail_full`);
+                const data = await response.json();
                 
-                const reviewsResponse = await fetch(`${API_BASE}/restaurants/${restaurantId}/reviews`);
-                const reviewsData = await reviewsResponse.json();
-                const reviews = reviewsData.results || [];
+                const restaurant = data.restaurant || {};
+                const reviews = data.reviews ? (data.reviews.reviews || []) : [];
+                const menus = data.menus ? (data.menus.menu_groups || []) : [];
+                
+                console.log('📡 Yogiyo API 소스:', data.source);
                 
                 const imageUrl = restaurant.image || '';
                 const imageHtml = imageUrl ? `<img src="${imageUrl}" alt="">` : '이미지 없음';
                 
+                // 리뷰 HTML 생성
                 let reviewsHtml = '';
-                if (reviews.length > 0) {
+                if (reviews && reviews.length > 0) {
                     reviewsHtml = reviews.slice(0, 3).map(review => `
                         <div class="review-item">
                             <div class="review-header">
-                                <span class="review-author">${review.owner_name || '익명'}</span>
-                                <span class="review-rating">⭐ ${review.rating}</span>
+                                <span class="review-author">${review.author || review.owner_name || '익명'}</span>
+                                <span class="review-rating">⭐ ${review.rating || review.score || 0}</span>
                             </div>
-                            <div class="review-text">${review.caption || '리뷰 내용 없음'}</div>
+                            <div class="review-text">${review.text || review.caption || '리뷰 내용 없음'}</div>
                         </div>
                     `).join('');
+                }
+                
+                // 메뉴 HTML 생성
+                let menusHtml = '';
+                if (menus && menus.length > 0) {
+                    menusHtml = `
+                        <div class="menus-section">
+                            <h3>메뉴</h3>
+                            ${menus.map(group => `
+                                <div class="menu-group">
+                                    <h4>${group.name || '메뉴'}</h4>
+                                    ${(group.items || []).map(item => `
+                                        <div class="menu-item">
+                                            <span class="menu-name">${item.name || '메뉴명'}</span>
+                                            <span class="menu-price">${item.price || 0}원</span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
                 }
                 
                 content.innerHTML = `
                     <div class="detail-image">${imageHtml}</div>
                     <div class="detail-info">
-                        <h2>${restaurant.name}</h2>
+                        <h2>${restaurant.name || '음식점'}</h2>
                         <p><strong>📍 주소:</strong> ${restaurant.address || '정보 없음'}</p>
-                        <p><strong>📞 전화:</strong> ${restaurant.tel_number || '정보 없음'}</p>
+                        <p><strong>📞 전화:</strong> ${restaurant.tel_number || restaurant.phone || '정보 없음'}</p>
                         <p><strong>⏰ 영업시간:</strong> ${restaurant.opening_time || '정보 없음'} ~ ${restaurant.closing_time || '정보 없음'}</p>
-                        <p><strong>💰 최소주문금액:</strong> ${restaurant.min_order_price || '정보 없음'}원</p>
-                        <p><strong>🚗 배달비:</strong> ${restaurant.delivery_charge || '정보 없음'}원 / ${restaurant.delivery_time || '30'}분</p>
-                        <p><strong>⭐ 평점:</strong> ${(restaurant.average_rating || 0).toFixed(1)} (${restaurant.review_count || 0}개)</p>
+                        <p><strong>💰 최소주문금액:</strong> ${restaurant.min_order_price || restaurant.min_order_amount || '정보 없음'}원</p>
+                        <p><strong>🚗 배달비:</strong> ${restaurant.delivery_charge || restaurant.delivery_fee || '정보 없음'}원 / ${restaurant.delivery_time || '30'}분</p>
+                        <p><strong>⭐ 평점:</strong> ${(restaurant.average_rating || restaurant.avg_rating || 0).toFixed(1)} (${restaurant.review_count || 0}개)</p>
                         <p><strong>📝 설명:</strong> ${restaurant.notification || '정보 없음'}</p>
+                        <p style="font-size: 12px; color: #999;"><em>데이터 소스: ${data.source === 'yogiyo_api' ? '🌐 Yogiyo 실시간 API' : 'Django API'}</em></p>
                     </div>
+                    ${menusHtml}
                     ${reviewsHtml ? `
                         <div class="reviews-section">
                             <h3>최근 리뷰</h3>
