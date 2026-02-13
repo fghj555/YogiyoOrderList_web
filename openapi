@@ -1,17 +1,5 @@
 swagger: '2.0'
 info:
-  description: |
-    요기요 클론 API
-    [GitHub repository](https://github.com/YogiyoCloneTeamProject/YogiYoCloneAPI)
-  version: 1.0.0
-  title: Yogiyo_API
-  contact:
-    email: kjw11077naver@gmail.com
-  license:
-    name: MIT License
-# host: petstore.swagger.io
-# basePath: /v2
-
 tags:
 - name: restaurants
   description: Everything about your Pets

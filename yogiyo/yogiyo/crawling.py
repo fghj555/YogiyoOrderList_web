@@ -263,37 +263,64 @@ class Crawling:
     def dict_to_json_file(self, list_info_dict):
         crawl_data = []
         for page_id in list_info_dict.keys():
-            restaurant_api_url = f'https://www.yogiyo.co.kr/api/v1/restaurants/{page_id}/?lat={lat}&lng={lng}'
+            restaurant_api_url = f'https://www.yogiyo.co.kr/api/v2/restaurants/{page_id}/?lat={lat}&lng={lng}'
             restaurant_info_api_url = f'https://www.yogiyo.co.kr/api/v1/restaurants/{page_id}/info/'
             review_api_url = f'https://www.yogiyo.co.kr/api/v1/reviews/{page_id}/?count=30&only_photo_review=false&page=1&sort=time'
-            menu_api_url = f'https://www.yogiyo.co.kr/api/v1/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery'
             avgrating_url = f'https://www.yogiyo.co.kr/review/restaurant/{page_id}/avgrating/'
 
             restaurant_data = {
                 'list_info': list_info_dict[page_id],
-                'restaurant_results': self.get_response_json_data(restaurant_api_url),
-                'restaurant_info_results': self.get_response_json_data(restaurant_info_api_url),
-                'review_results': self.get_response_json_data(review_api_url),
-                'menu_results': self.get_response_json_data(menu_api_url),
-                'avgrating_results': self.get_response_json_data(avgrating_url),
+                'restaurant_results': self.get_response_json_data(restaurant_api_url, default={}),
+                'restaurant_info_results': self.get_response_json_data(restaurant_info_api_url, default={}),
+                'review_results': self.get_response_json_data(review_api_url, default=[]),
+                'menu_results': self.get_menu_response(page_id),
+                'avgrating_results': self.get_response_json_data(avgrating_url, default={}),
             }
             crawl_data.append(restaurant_data)
 
         with open('yogiyo_data_for_parsing.json', 'w', encoding='utf-8') as file:
             json.dump(crawl_data, file, ensure_ascii=False, indent='\t')
 
-    def get_response_json_data(self, url):
+    def get_response_json_data(self, url, default=None):
         """API URL -> JSON -> 딕셔너리"""
-        r = self.s.get(url)
-        response_str = r.content.decode('utf-8')
-        return json.loads(response_str)
+        try:
+            r = self.s.get(url)
+            if not r.ok:
+                return default
+            response_str = r.content.decode('utf-8')
+            return json.loads(response_str)
+        except Exception:
+            return default
+
+    def get_menu_response(self, page_id):
+        """메뉴 API 응답 실패 시 빈 리스트로 처리"""
+        menu_urls = [
+            f'https://www.yogiyo.co.kr/api/v1/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery',
+            f'https://www.yogiyo.co.kr/api/v2/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery',
+        ]
+
+        for menu_url in menu_urls:
+            data = self.get_response_json_data(menu_url, default=None)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get('menu_groups', [])
+        return []
 
     def get_page_id_list(self):
         """레스토랑 id 리스트"""
-        restaurant_list_url = f'https://www.yogiyo.co.kr/api/v1/restaurants-geo/?items=450&lat={lat}&lng={lng}&order=rank&page=0&search='
-        restaurant_list_results = self.get_response_json_data(restaurant_list_url)['restaurants']
+        list_info_dict = {}
+        for page in range(0, 10):
+            restaurant_list_url = f'https://www.yogiyo.co.kr/api/v2/restaurants/?lat={lat}&lng={lng}&page={page}'
+            response_data = self.get_response_json_data(restaurant_list_url, default={})
+            restaurant_list_results = response_data.get('restaurants', []) if isinstance(response_data, dict) else []
+            if not restaurant_list_results:
+                break
 
-        list_info_dict = {restaurant_dict['id']: restaurant_dict for restaurant_dict in restaurant_list_results}
+            for restaurant_dict in restaurant_list_results:
+                list_info_dict[restaurant_dict['id']] = restaurant_dict
+            if len(list_info_dict) >= 450:
+                break
 
         return list_info_dict
 

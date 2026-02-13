@@ -28,7 +28,8 @@ class YogiyoAPIClient:
             'x-apisecret': 'fe5183cc3dea12bd0ce299cf110a75a2',
             'User-Agent': 'Mozilla/5.0'
         })
-        self.base_url = 'https://www.yogiyo.co.kr/api/v1'
+        self.base_v1_url = 'https://www.yogiyo.co.kr/api/v1'
+        self.base_v2_url = 'https://www.yogiyo.co.kr/api/v2'
         
     def get_response_json(self, url, timeout=10):
         """API 요청 → JSON 반환"""
@@ -42,27 +43,34 @@ class YogiyoAPIClient:
     
     def get_restaurants_list(self, lat=37.545133, lng=127.057129, items=50, page=0):
         """식당 목록 조회"""
-        url = f'{self.base_url}/restaurants-geo/?items={items}&lat={lat}&lng={lng}&order=rank&page={page}&search='
+        url = f'{self.base_v2_url}/restaurants/?lat={lat}&lng={lng}&page={page}'
         return self.get_response_json(url)
     
     def get_restaurant_detail(self, page_id, lat=37.545133, lng=127.057129):
         """식당 상세정보"""
-        url = f'{self.base_url}/restaurants/{page_id}/?lat={lat}&lng={lng}'
+        url = f'{self.base_v2_url}/restaurants/{page_id}/?lat={lat}&lng={lng}'
         return self.get_response_json(url)
     
     def get_restaurant_info(self, page_id):
         """식당 추가정보"""
-        url = f'{self.base_url}/restaurants/{page_id}/info/'
+        url = f'{self.base_v1_url}/restaurants/{page_id}/info/'
         return self.get_response_json(url)
     
     def get_menu(self, page_id):
         """메뉴 조회"""
-        url = f'{self.base_url}/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery'
-        return self.get_response_json(url)
+        urls = [
+            f'{self.base_v1_url}/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery',
+            f'{self.base_v2_url}/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery'
+        ]
+        for url in urls:
+            result = self.get_response_json(url)
+            if isinstance(result, (dict, list)):
+                return result
+        return []
     
     def get_reviews(self, page_id, count=30, page=1):
         """리뷰 조회"""
-        url = f'{self.base_url}/reviews/{page_id}/?count={count}&only_photo_review=false&page={page}&sort=time'
+        url = f'{self.base_v1_url}/reviews/{page_id}/?count={count}&only_photo_review=false&page={page}&sort=time'
         return self.get_response_json(url)
     
     def get_avg_rating(self, page_id):
@@ -117,10 +125,10 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
         
         try:
             # 실제 Yogiyo API에서 식당 목록 조회
-            response = self.yogiyo_client.get_restaurants_list(lat=lat, lng=lng, items=50, page=0)
+            response = self.yogiyo_client.get_restaurants_list(lat=lat, lng=lng, items=100, page=0)
             
-            if response and 'restaurants' in response:
-                restaurants = response['restaurants']
+            if isinstance(response, dict) and 'restaurants' in response:
+                restaurants = response.get('restaurants', [])
                 print(f"✅ {len(restaurants)}개의 식당을 조회했습니다")
                 return restaurants
             else:
@@ -133,25 +141,52 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
     
     def format_yogiyo_restaurant(self, restaurant_data):
         """Yogiyo API 응답을 표준 형식으로 변환"""
-        
-        # 기본 정보
+        delivery_charge = restaurant_data.get('adjusted_delivery_fee')
+        if delivery_charge is None:
+            delivery_charge = restaurant_data.get('minimum_delivery_fee')
+        if delivery_charge is None:
+            delivery_charge = restaurant_data.get('delivery_fee')
+
+        representative_menus = restaurant_data.get('representative_menus')
+        if isinstance(representative_menus, list):
+            representative_menus = ', '.join(representative_menus)
+
         formatted = {
             'id': restaurant_data.get('id'),
             'name': restaurant_data.get('name'),
             'lat': restaurant_data.get('lat'),
             'lng': restaurant_data.get('lng'),
-            'address': restaurant_data.get('address'),
+            'address': restaurant_data.get('address') or '주소 정보 없음',
             'min_order_price': restaurant_data.get('min_order_amount', 0),
-            'delivery_charge': restaurant_data.get('delivery_fee'),
+            'delivery_charge': delivery_charge,
             'delivery_time': restaurant_data.get('estimated_delivery_time'),
-            'average_rating': restaurant_data.get('avg_rating', 0),
+            'average_rating': restaurant_data.get('review_avg', restaurant_data.get('avg_rating', 0)),
             'review_count': restaurant_data.get('review_count', 0),
-            'image': restaurant_data.get('logo_url'),
+            'image': restaurant_data.get('logo_url') or restaurant_data.get('new_logo_url') or '',
+            'representative_menus': representative_menus or '',
             'categories': ','.join(restaurant_data.get('categories', [])) if restaurant_data.get('categories') else '',
-            'payment_methods': ','.join(restaurant_data.get('payment_methods', [])),
+            'payment_methods': ','.join(restaurant_data.get('payment_methods', [])) if restaurant_data.get('payment_methods') else '',
         }
         
         return formatted
+
+    def match_category(self, restaurant_categories, selected_category):
+        if not selected_category:
+            return True
+
+        selected = str(selected_category).strip().lower()
+        if not selected:
+            return True
+
+        category_text = ' '.join([str(cat).lower() for cat in (restaurant_categories or [])])
+        if selected in category_text:
+            return True
+
+        for token in selected.replace('/', ' ').split():
+            if token and token in category_text:
+                return True
+
+        return False
 
     @action(detail=False, methods=['GET'])
     def search(self, request, *args, **kwargs):
@@ -167,7 +202,7 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
         keyword = request.query_params.get('keyword', '')
         lat = request.query_params.get('lat', 37.4979)
         lng = request.query_params.get('lng', 127.0276)
-        category = request.query_params.get('category')
+        category = request.query_params.get('category') or request.query_params.get('categories')
         
         try:
             lat = float(lat)
@@ -193,7 +228,7 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
                 # 카테고리 필터링
                 if category:
                     categories = restaurant_data.get('categories', [])
-                    if not any(category.lower() in cat.lower() for cat in categories):
+                    if not self.match_category(categories, category):
                         continue
                 
                 formatted = self.format_yogiyo_restaurant(restaurant_data)
@@ -214,13 +249,19 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
         
         try:
             # Yogiyo API에서 메뉴 데이터 직접 조회
-            menu_data = self.yogiyo_client.get_menu(pk)
-            
-            if menu_data:
+            menu_response = self.yogiyo_client.get_menu(pk)
+            if isinstance(menu_response, list):
+                menu_groups = menu_response
+            elif isinstance(menu_response, dict):
+                menu_groups = menu_response.get('menu_groups', [])
+            else:
+                menu_groups = []
+
+            if menu_groups:
                 print(f"✅ Yogiyo API에서 메뉴 데이터 조회 성공")
                 return Response({
                     'restaurant_id': pk,
-                    'menu_groups': menu_data.get('menu_groups', []),
+                    'menu_groups': menu_groups,
                     'source': 'yogiyo_api'
                 })
             else:
@@ -249,17 +290,27 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
         
         try:
             # Yogiyo API에서 식당 상세정보 조회
-            restaurant_data = self.yogiyo_client.get_restaurant_detail(pk)
+            lat = request.query_params.get('lat', 35.212631)
+            lng = request.query_params.get('lng', 126.841430)
+
+            restaurant_data = self.yogiyo_client.get_restaurant_detail(pk, lat=lat, lng=lng)
             restaurant_info = self.yogiyo_client.get_restaurant_info(pk)
-            menu_data = self.yogiyo_client.get_menu(pk)
+            menu_response = self.yogiyo_client.get_menu(pk)
             reviews_data = self.yogiyo_client.get_reviews(pk)
+
+            if isinstance(menu_response, list):
+                menu_data = {'menu_groups': menu_response}
+            elif isinstance(menu_response, dict):
+                menu_data = menu_response
+            else:
+                menu_data = {'menu_groups': []}
             
             print(f"✅ Yogiyo API\uc5d0\uc11c \ubaa8\ub4e0 \ub370\uc774\ud130 \uc870\ud68c \uc131\uacf5")
             
             return Response({
                 'restaurant': restaurant_data if restaurant_data else {},
                 'restaurant_info': restaurant_info if restaurant_info else {},
-                'menus': menu_data if menu_data else {},
+                'menus': menu_data,
                 'reviews': reviews_data if reviews_data else {},
                 'source': 'yogiyo_api'
             })
@@ -294,7 +345,27 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
         ordering : average_rating, delivery_charge, min_order_price, delivery_time, review_count,
                    owner_comment_count
         """
-        return super().list(request, *args, **kwargs)
+        lat = request.query_params.get('lat', 35.212631)
+        lng = request.query_params.get('lng', 126.841430)
+        category = request.query_params.get('categories') or request.query_params.get('category')
+
+        try:
+            lat = float(lat)
+            lng = float(lng)
+        except Exception:
+            lat = 35.212631
+            lng = 126.841430
+
+        realtime_restaurants = self.get_realtime_data(lat=lat, lng=lng)
+        results = []
+        for item in realtime_restaurants:
+            if category:
+                categories = item.get('categories', [])
+                if not self.match_category(categories, category):
+                    continue
+            results.append(self.format_yogiyo_restaurant(item))
+
+        return Response({'results': results, 'count': len(results), 'source': 'yogiyo_api'})
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
@@ -346,8 +417,10 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
 
         별점순으로 정렬
         """
-        qs = self.get_queryset().order_by('-average_rating').filter(average_rating__gte=4)
-        return self.home_view_results(qs)
+        data = self.list(request, *args, **kwargs).data.get('results', [])
+        data = [item for item in data if float(item.get('average_rating', 0) or 0) >= 4]
+        data.sort(key=lambda x: float(x.get('average_rating', 0) or 0), reverse=True)
+        return Response({'results': data[:self.HOME_VIEW_PAGE_SIZE], 'source': 'yogiyo_api'})
 
     @action(detail=False, methods=['GET'])
     def home_view_bookmark(self, request, *args, **kwargs):
@@ -357,8 +430,9 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
 
         찜 개수 순으로 정렬
         """
-        qs = self.get_queryset().order_by('-bookmark')
-        return self.home_view_results(qs)
+        data = self.list(request, *args, **kwargs).data.get('results', [])
+        data.sort(key=lambda x: int(x.get('review_count', 0) or 0), reverse=True)
+        return Response({'results': data[:self.HOME_VIEW_PAGE_SIZE], 'source': 'yogiyo_api'})
 
     @action(detail=False, methods=['GET'])
     def home_view_delivery_discount(self, request, *args, **kwargs):
@@ -367,8 +441,9 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
 
 
         할인이 0원이 아닌 매장"""
-        qs = self.get_queryset().filter(delivery_discount__gt=0)
-        return self.home_view_results(qs)
+        data = self.list(request, *args, **kwargs).data.get('results', [])
+        data = [item for item in data if int(item.get('delivery_charge') or 0) > 0]
+        return Response({'results': data[:self.HOME_VIEW_PAGE_SIZE], 'source': 'yogiyo_api'})
 
     @action(detail=False, methods=['GET'])
     def home_view_delivery_charge(self, request, *args, **kwargs):
@@ -378,8 +453,9 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
 
         배달비 0원
         """
-        qs = self.get_queryset().filter(delivery_charge=0)
-        return self.home_view_results(qs)
+        data = self.list(request, *args, **kwargs).data.get('results', [])
+        data = [item for item in data if int(item.get('delivery_charge') or 0) == 0]
+        return Response({'results': data[:self.HOME_VIEW_PAGE_SIZE], 'source': 'yogiyo_api'})
 
     @action(detail=False, methods=['GET'])
     def home_view_review(self, request, *args, **kwargs):
@@ -389,8 +465,9 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
 
         리뷰 개수 순으로 정렬
         """
-        qs = self.get_queryset().order_by('-review_count')
-        return self.home_view_results(qs)
+        data = self.list(request, *args, **kwargs).data.get('results', [])
+        data.sort(key=lambda x: int(x.get('review_count', 0) or 0), reverse=True)
+        return Response({'results': data[:self.HOME_VIEW_PAGE_SIZE], 'source': 'yogiyo_api'})
 
     @action(detail=False, methods=['GET'])
     def home_view_delivery_time(self, request, *args, **kwargs):
@@ -400,8 +477,15 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
 
         배달 시간순으로 정렬
         """
-        qs = self.get_queryset().order_by('delivery_time')
-        return self.home_view_results(qs)
+        data = self.list(request, *args, **kwargs).data.get('results', [])
+
+        def delivery_key(item):
+            t = str(item.get('delivery_time') or '')
+            nums = ''.join(ch if ch.isdigit() else ' ' for ch in t).split()
+            return int(nums[0]) if nums else 999
+
+        data.sort(key=delivery_key)
+        return Response({'results': data[:self.HOME_VIEW_PAGE_SIZE], 'source': 'yogiyo_api'})
 
     def home_view_results(self, qs):
         serializer = self.get_serializer(qs[:self.HOME_VIEW_PAGE_SIZE], many=True)

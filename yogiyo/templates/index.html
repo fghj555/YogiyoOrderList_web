@@ -321,13 +321,19 @@
     
     <div class="container">
         <div class="category-buttons">
-            <button class="category-btn active" data-category="all">전체</button>
-            <button class="category-btn" data-category="rating">나의 입맛저격</button>
-            <button class="category-btn" data-category="bookmark">우리동네 찜</button>
-            <button class="category-btn" data-category="delivery_charge">배달비 무료</button>
-            <button class="category-btn" data-category="delivery_discount">오늘만 할인</button>
-            <button class="category-btn" data-category="delivery_time">가장 빨리</button>
-            <button class="category-btn" data-category="review">리뷰 많음</button>
+            <button class="category-btn active" data-category="all">전체보기</button>
+            <button class="category-btn" data-category="1인분 주문">1인분 주문</button>
+            <button class="category-btn" data-category="프랜차이즈">프랜차이즈</button>
+            <button class="category-btn" data-category="치킨">치킨</button>
+            <button class="category-btn" data-category="피자/양식">피자/양식</button>
+            <button class="category-btn" data-category="중국집">중국집</button>
+            <button class="category-btn" data-category="한식">한식</button>
+            <button class="category-btn" data-category="일식/돈까스">일식/돈까스</button>
+            <button class="category-btn" data-category="족발/보쌈">족발/보쌈</button>
+            <button class="category-btn" data-category="야식">야식</button>
+            <button class="category-btn" data-category="분식">분식</button>
+            <button class="category-btn" data-category="카페/디저트">카페/디저트</button>
+            <button class="category-btn" data-category="편의점/마트">편의점/마트</button>
         </div>
         
         <div id="loading" class="loading" style="display:none;">로딩 중...</div>
@@ -348,16 +354,6 @@
         // 기본 위치 (광주광역시)
         let currentLat = 35.209294;
         let currentLng = 126.840295;
-        
-        const endpoints = {
-            all: (lat, lng) => `/restaurants?lat=${lat}&lng=${lng}`,
-            rating: (lat, lng) => `/restaurants/home_view_average_rating?lat=${lat}&lng=${lng}`,
-            bookmark: (lat, lng) => `/restaurants/home_view_bookmark?lat=${lat}&lng=${lng}`,
-            delivery_charge: (lat, lng) => `/restaurants/home_view_delivery_charge?lat=${lat}&lng=${lng}`,
-            delivery_discount: (lat, lng) => `/restaurants/home_view_delivery_discount?lat=${lat}&lng=${lng}`,
-            delivery_time: (lat, lng) => `/restaurants/home_view_delivery_time?lat=${lat}&lng=${lng}`,
-            review: (lat, lng) => `/restaurants/home_view_review?lat=${lat}&lng=${lng}`
-        };
         
         let currentCategory = 'all';
         
@@ -426,8 +422,10 @@
             error.style.display = 'none';
             
             try {
-                const endpoint = endpoints[currentCategory];
-                const url = `${API_BASE}${endpoint(currentLat, currentLng)}`;
+                const categoryQuery = currentCategory === 'all'
+                    ? ''
+                    : `&categories=${encodeURIComponent(currentCategory)}`;
+                const url = `${API_BASE}/restaurants?lat=${currentLat}&lng=${currentLng}${categoryQuery}`;
                 const response = await fetch(url);
                 
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -467,7 +465,7 @@
                 <div class="restaurant-info">
                     <div class="restaurant-name">${restaurant.name}</div>
                     <div class="restaurant-meta">${restaurant.address || '주소 정보 없음'}</div>
-                    <div class="restaurant-meta">배달비: ${restaurant.delivery_charge || '정보 없음'} | ${restaurant.delivery_time || '30'}분</div>
+                    <div class="restaurant-meta">배달비: ${restaurant.delivery_charge || '정보 없음'} | ${restaurant.delivery_time || '정보 없음'}</div>
                     <div class="restaurant-rating">
                         ⭐ ${(restaurant.average_rating || 0).toFixed(1)} 
                         (${restaurant.review_count || 0}개)
@@ -485,7 +483,7 @@
             
             try {
                 // 새로운 detail_full 엔드포인트 사용 - Yogiyo API 실시간 데이터
-                const response = await fetch(`${API_BASE}/restaurants/${restaurantId}/detail_full`);
+                const response = await fetch(`${API_BASE}/restaurants/${restaurantId}/detail_full?lat=${currentLat}&lng=${currentLng}`);
                 const data = await response.json();
                 
                 const restaurant = data.restaurant || {};
@@ -494,7 +492,7 @@
                 
                 console.log('📡 Yogiyo API 소스:', data.source);
                 
-                const imageUrl = restaurant.image || '';
+                const imageUrl = restaurant.image || restaurant.logo_url || restaurant.new_logo_url || '';
                 const imageHtml = imageUrl ? `<img src="${imageUrl}" alt="">` : '이미지 없음';
                 
                 // 리뷰 HTML 생성
