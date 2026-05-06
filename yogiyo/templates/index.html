@@ -227,15 +227,38 @@
         .menu-item {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            padding: 10px 0;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px 0;
             border-bottom: 1px solid #f0f0f0;
             font-size: 13px;
+        }
+
+        .menu-thumb {
+            width: 64px;
+            height: 64px;
+            border-radius: 6px;
+            object-fit: cover;
+            background: #eee;
+            flex: 0 0 auto;
         }
         
         .menu-name {
             flex: 1;
             color: #333;
+        }
+
+        .menu-desc {
+            color: #777;
+            font-size: 12px;
+            line-height: 1.4;
+            margin-top: 4px;
+        }
+
+        .menu-options {
+            color: #667eea;
+            font-size: 12px;
+            margin-top: 4px;
         }
         
         .menu-price {
@@ -349,7 +372,7 @@
     </div>
     
     <script>
-        const API_BASE = 'http://127.0.0.1:8000';
+        const API_BASE = window.location.origin;
         
         // 기본 위치 (광주광역시)
         let currentLat = 35.209294;
@@ -518,9 +541,16 @@
                             ${menus.map(group => `
                                 <div class="menu-group">
                                     <h4>${group.name || '메뉴'}</h4>
-                                    ${(group.items || []).map(item => `
+                                    ${(group.items || group.menu || []).map(item => `
                                         <div class="menu-item">
-                                            <span class="menu-name">${item.name || '메뉴명'}</span>
+                                            ${item.image ? `<img class="menu-thumb" src="${item.image}" alt="">` : ''}
+                                            <div class="menu-name">
+                                                <div>${item.name || '메뉴명'}${item.soldout ? ' (품절)' : ''}</div>
+                                                ${item.description || item.caption ? `<div class="menu-desc">${item.description || item.caption}</div>` : ''}
+                                                ${item.option_groups && item.option_groups.length
+                                                    ? `<div class="menu-options">옵션 ${item.option_groups.length}개</div>`
+                                                    : ''}
+                                            </div>
                                             <span class="menu-price">${item.price || 0}원</span>
                                         </div>
                                     `).join('')}

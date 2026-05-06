@@ -295,10 +295,10 @@ class Crawling:
     def get_menu_response(self, page_id):
         """메뉴 API 응답 실패 시 빈 리스트로 처리"""
         menu_urls = [
-            f'https://www.yogiyo.co.kr/api/v1/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery',
-            f'https://www.yogiyo.co.kr/api/v2/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery',
+            f'https://www.yogiyo.co.kr/api/v1/restaurants/{page_id}/menu/',
+            f'https://www.yogiyo.co.kr/api/v2/restaurants/{page_id}/menu/?add_photo_menu=web&add_one_dish_menu=true&order_serving_type=delivery',
         ]
-
+        print("menu_urls:", menu_urls)
         for menu_url in menu_urls:
             data = self.get_response_json_data(menu_url, default=None)
             if isinstance(data, list):

@@ -7,9 +7,11 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 from taggit.models import Tag
+import base64
 import json
 import os
 import requests
+import time
 from datetime import datetime
 from math import radians, sin, cos, sqrt, atan2
 
@@ -30,16 +32,78 @@ class YogiyoAPIClient:
         })
         self.base_v1_url = 'https://www.yogiyo.co.kr/api/v1'
         self.base_v2_url = 'https://www.yogiyo.co.kr/api/v2'
+        self.frontyo_api_url = 'https://frontyo.yogiyo.co.kr'
+        self.memberyo_api_url = 'https://memberyo.yogiyo.co.kr'
+        self.access_token = None
+        self.access_token_expires_at = 0
         
-    def get_response_json(self, url, timeout=10):
+    def get_response_json(self, url, params=None, headers=None, timeout=10):
         """API 요청 → JSON 반환"""
         try:
-            r = self.s.get(url, timeout=timeout)
+            r = self.s.get(url, params=params, headers=headers, timeout=timeout)
+            r.encoding = 'utf-8'
             r.raise_for_status()
             return r.json()
         except Exception as e:
             print(f"❌ API 호출 오류 ({url}): {e}")
             return None
+
+    def get_web_headers(self):
+        return {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/json, text/plain, */*',
+            'Origin': 'https://www.yogiyo.co.kr',
+            'Referer': 'https://www.yogiyo.co.kr/mobile/',
+        }
+
+    def get_ygy_headers(self):
+        return {
+            **self.get_web_headers(),
+            'Authorization': f'Bearer {self.get_access_token()}',
+            'X-YGY-APP-VERSION': '9.0.0',
+            'X-YGY-OS-TYPE': 'IOS',
+            'X-YGY-OS-VERSION': '26',
+            'X-YGY-DEVICE-MODEL': 'MOBILE-WEB',
+            'X-YGY-DEVICE-ID': 'MOBILE-WEB',
+            'X-YGY-LOCALE': 'ko',
+            'X-YGY-APP-BUILD-TYPE': 'alpha',
+        }
+
+    def get_access_token(self):
+        """요기요 모바일 웹과 동일한 비회원 토큰 발급 흐름."""
+        if self.access_token and time.time() < self.access_token_expires_at:
+            return self.access_token
+
+        headers = {
+            **self.get_web_headers(),
+            'Content-Type': 'application/json',
+        }
+        response = self.s.post(f'{self.memberyo_api_url}/v1/customers', headers=headers, timeout=10)
+        response.encoding = 'utf-8'
+        response.raise_for_status()
+        authorization_url = response.json().get('authorization_url')
+        if not authorization_url:
+            raise RuntimeError('Yogiyo authorization_url 응답이 없습니다.')
+
+        token_response = self.s.get(authorization_url, headers=self.get_web_headers(), timeout=10)
+        token_response.encoding = 'utf-8'
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        self.access_token = token_data.get('access_token')
+        if not self.access_token:
+            raise RuntimeError('Yogiyo access_token 응답이 없습니다.')
+
+        self.access_token_expires_at = self.get_token_expires_at(self.access_token)
+        return self.access_token
+
+    def get_token_expires_at(self, token):
+        try:
+            payload = token.split('.')[1]
+            payload += '=' * (-len(payload) % 4)
+            decoded = base64.urlsafe_b64decode(payload.encode('utf-8'))
+            return int(json.loads(decoded.decode('utf-8')).get('exp', 0)) - 60
+        except Exception:
+            return time.time() + 60 * 60
     
     def get_restaurants_list(self, lat=37.545133, lng=127.057129, items=50, page=0):
         """식당 목록 조회"""
@@ -56,8 +120,12 @@ class YogiyoAPIClient:
         url = f'{self.base_v1_url}/restaurants/{page_id}/info/'
         return self.get_response_json(url)
     
-    def get_menu(self, page_id):
+    def get_menu(self, page_id, lat=37.545133, lng=127.057129):
         """메뉴 조회"""
+        realtime_menu = self.get_frontyo_menu(page_id, lat=lat, lng=lng)
+        if realtime_menu.get('menu_groups'):
+            return realtime_menu
+
         urls = [
             f'{self.base_v1_url}/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery',
             f'{self.base_v2_url}/restaurants/{page_id}/menu/?add_photo_menu=android&add_one_dish_menu=true&order_serving_type=delivery'
@@ -67,6 +135,93 @@ class YogiyoAPIClient:
             if isinstance(result, (dict, list)):
                 return result
         return []
+
+    def get_frontyo_menu(self, page_id, lat=37.545133, lng=127.057129):
+        """현재 요기요 모바일 웹 메뉴 API에서 실시간 메뉴 조회."""
+        url = f'{self.frontyo_api_url}/v1/aggregation/shops/{page_id}/menus'
+        params = {
+            'order_serving_type': 'delivery',
+            'lat': lat,
+            'lng': lng,
+        }
+        data = self.get_response_json(url, params=params, headers=self.get_ygy_headers(), timeout=15)
+        return self.normalize_menu_response(data)
+
+    def normalize_menu_response(self, data):
+        """frontyo 메뉴 응답을 프론트에서 쓰는 menu_groups/items 형태로 변환."""
+        if not isinstance(data, dict):
+            return {'menu_groups': []}
+
+        if 'menu_groups' in data:
+            return data
+
+        sections = data.get('menu_sections') or []
+        menu_map = data.get('menu') or {}
+        option_map = data.get('option') or {}
+        menu_groups = []
+
+        for section in sections:
+            section_items = []
+            for item_id in section.get('items') or []:
+                item = menu_map.get(str(item_id)) or menu_map.get(item_id)
+                if item:
+                    section_items.append(self.normalize_menu_item(item, option_map))
+
+            if section_items:
+                menu_groups.append({
+                    'id': section.get('id'),
+                    'name': section.get('title') or section.get('name') or '메뉴',
+                    'description': section.get('description') or '',
+                    'type': section.get('type'),
+                    'items': section_items,
+                })
+
+        return {
+            'menu_groups': menu_groups,
+            'source_format': 'frontyo_aggregation',
+        }
+
+    def normalize_menu_item(self, item, option_map):
+        price = item.get('price') or {}
+        thumbnail = item.get('thumbnail') or {}
+
+        option_groups = []
+        for option_section in item.get('option_sections') or []:
+            options = []
+            for option_id in option_section.get('items') or []:
+                option = option_map.get(str(option_id)) or option_map.get(option_id)
+                if not option:
+                    continue
+
+                option_price = option.get('price') or {}
+                options.append({
+                    'id': option.get('id'),
+                    'name': option.get('name'),
+                    'description': option.get('description') or '',
+                    'price': option_price.get('final_price') or option_price.get('origin_price') or 0,
+                    'soldout': option.get('soldout', False),
+                })
+
+            option_groups.append({
+                'id': option_section.get('id'),
+                'name': option_section.get('title') or '옵션',
+                'mandatory': option_section.get('required', False),
+                'multiple_limit': option_section.get('multiple_limit'),
+                'items': options,
+            })
+
+        return {
+            'id': item.get('id'),
+            'name': item.get('name'),
+            'description': item.get('description') or '',
+            'caption': item.get('description') or '',
+            'image': thumbnail.get('image') if isinstance(thumbnail, dict) else None,
+            'price': price.get('final_price') or price.get('origin_price') or 0,
+            'origin_price': price.get('origin_price') or 0,
+            'soldout': item.get('soldout', False),
+            'review_count': item.get('review_count') or 0,
+            'option_groups': option_groups,
+        }
     
     def get_reviews(self, page_id, count=30, page=1):
         """리뷰 조회"""
@@ -119,25 +274,43 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
             self._yogiyo_client = YogiyoAPIClient()
         return self._yogiyo_client
 
-    def get_realtime_data(self, lat=37.4979, lng=127.0276):
+    def get_realtime_data(self, lat=37.4979, lng=127.0276, pages=3):
         """실제 Yogiyo API에서 실시간 데이터 로드"""
         print(f"🔄 Yogiyo API에서 실시간 데이터 조회 중... (위도: {lat}, 경도: {lng})")
         
         try:
-            # 실제 Yogiyo API에서 식당 목록 조회
-            response = self.yogiyo_client.get_restaurants_list(lat=lat, lng=lng, items=100, page=0)
-            
-            if isinstance(response, dict) and 'restaurants' in response:
-                restaurants = response.get('restaurants', [])
-                print(f"✅ {len(restaurants)}개의 식당을 조회했습니다")
-                return restaurants
-            else:
-                print(f"⚠️ API 응답이 예상과 다릅니다: {response}")
-                return []
+            restaurants = []
+            pages = max(1, min(int(pages), 10))
+
+            for page in range(pages):
+                response = self.yogiyo_client.get_restaurants_list(lat=lat, lng=lng, items=100, page=page)
+
+                if not isinstance(response, dict) or 'restaurants' not in response:
+                    print(f"⚠️ API 응답이 예상과 다릅니다: {response}")
+                    break
+
+                page_restaurants = response.get('restaurants', [])
+                if not page_restaurants:
+                    break
+
+                restaurants.extend(page_restaurants)
+
+                total_pages = (response.get('pagination') or {}).get('total_pages')
+                if total_pages is not None and page + 1 >= total_pages:
+                    break
+
+            print(f"✅ {len(restaurants)}개의 식당을 조회했습니다")
+            return restaurants
                 
         except Exception as e:
             print(f"❌ 실시간 데이터 조회 오류: {e}")
             return []
+
+    def get_requested_pages(self, request, default=3):
+        try:
+            return max(1, min(int(request.query_params.get('pages', default)), 10))
+        except Exception:
+            return default
     
     def format_yogiyo_restaurant(self, restaurant_data):
         """Yogiyo API 응답을 표준 형식으로 변환"""
@@ -214,7 +387,11 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
         print(f"🔍 검색 요청: 키워드='{keyword}', 위치=({lat}, {lng})")
         
         # Yogiyo API에서 실시간 검색 데이터 조회
-        realtime_restaurants = self.get_realtime_data(lat=lat, lng=lng)
+        realtime_restaurants = self.get_realtime_data(
+            lat=lat,
+            lng=lng,
+            pages=self.get_requested_pages(request),
+        )
         
         results = []
         
@@ -248,8 +425,11 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
         print(f"📋 메뉴 조회 요청: 식당 ID={pk}")
         
         try:
+            lat = request.query_params.get('lat', 35.212631)
+            lng = request.query_params.get('lng', 126.841430)
+
             # Yogiyo API에서 메뉴 데이터 직접 조회
-            menu_response = self.yogiyo_client.get_menu(pk)
+            menu_response = self.yogiyo_client.get_menu(pk, lat=lat, lng=lng)
             if isinstance(menu_response, list):
                 menu_groups = menu_response
             elif isinstance(menu_response, dict):
@@ -295,7 +475,7 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
 
             restaurant_data = self.yogiyo_client.get_restaurant_detail(pk, lat=lat, lng=lng)
             restaurant_info = self.yogiyo_client.get_restaurant_info(pk)
-            menu_response = self.yogiyo_client.get_menu(pk)
+            menu_response = self.yogiyo_client.get_menu(pk, lat=lat, lng=lng)
             reviews_data = self.yogiyo_client.get_reviews(pk)
 
             if isinstance(menu_response, list):
@@ -356,7 +536,11 @@ class RestaurantViewSet(ReadOnlyModelViewSet):
             lat = 35.212631
             lng = 126.841430
 
-        realtime_restaurants = self.get_realtime_data(lat=lat, lng=lng)
+        realtime_restaurants = self.get_realtime_data(
+            lat=lat,
+            lng=lng,
+            pages=self.get_requested_pages(request),
+        )
         results = []
         for item in realtime_restaurants:
             if category:
